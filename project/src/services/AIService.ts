@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { env } from '../config/env';
 
 export interface AIAssistantMessage {
   role: 'user' | 'assistant' | 'system';
@@ -19,14 +20,23 @@ export class AIService {
   private static instance: AIService;
   private openai: OpenAI;
   private conversationHistory: AIAssistantMessage[] = [];
+  private config = env.get();
 
   constructor() {
     // Initialize with OpenRouter endpoint
     this.openai = new OpenAI({
       baseURL: 'https://openrouter.ai/api/v1',
-      apiKey: process.env.VITE_OPENROUTER_API_KEY || 'your-openrouter-api-key',
+      apiKey: this.config.openRouterApiKey || 'your-openrouter-api-key',
       dangerouslyAllowBrowser: true
     });
+
+    // Fallback to OpenAI if OpenRouter key is not available
+    if (!this.config.openRouterApiKey && this.config.openAiApiKey) {
+      this.openai = new OpenAI({
+        apiKey: this.config.openAiApiKey,
+        dangerouslyAllowBrowser: true
+      });
+    }
   }
 
   static getInstance(): AIService {
@@ -38,10 +48,14 @@ export class AIService {
 
   async getBuildingSuggestions(playerInventory: any[], biome: string): Promise<BuildingSuggestion[]> {
     try {
+      if (!this.hasValidApiKey()) {
+        return this.getFallbackSuggestions(biome);
+      }
+
       const prompt = `As a Minecraft building expert, suggest 3 creative building projects for a player in a ${biome} biome with these materials: ${playerInventory.map(item => item.name).join(', ')}. Return suggestions in JSON format with name, description, difficulty, materials, and steps.`;
 
       const response = await this.openai.chat.completions.create({
-        model: 'anthropic/claude-3-haiku',
+        model: this.getModel(),
         messages: [
           {
             role: 'system',
@@ -61,7 +75,6 @@ export class AIService {
         try {
           return JSON.parse(content);
         } catch {
-          // Fallback suggestions if JSON parsing fails
           return this.getFallbackSuggestions(biome);
         }
       }
@@ -75,6 +88,10 @@ export class AIService {
 
   async chatWithAssistant(message: string, gameContext?: any): Promise<string> {
     try {
+      if (!this.hasValidApiKey()) {
+        return this.getFallbackResponse(message);
+      }
+
       this.conversationHistory.push({
         role: 'user',
         content: message,
@@ -85,7 +102,7 @@ export class AIService {
         `Current game context: Player position: ${gameContext.position}, Health: ${gameContext.health}, Inventory: ${gameContext.inventory?.length || 0} items` : '';
 
       const response = await this.openai.chat.completions.create({
-        model: 'anthropic/claude-3-haiku',
+        model: this.getModel(),
         messages: [
           {
             role: 'system',
@@ -111,16 +128,20 @@ export class AIService {
       return assistantResponse;
     } catch (error) {
       console.error('AI chat error:', error);
-      return 'Sorry, I\'m having trouble connecting right now. Try asking me something about building or crafting!';
+      return this.getFallbackResponse(message);
     }
   }
 
   async generateStructure(description: string): Promise<any> {
     try {
+      if (!this.hasValidApiKey()) {
+        return this.getFallbackStructure();
+      }
+
       const prompt = `Generate a 3D structure blueprint for VoxelCraft based on this description: "${description}". Return a JSON object with coordinates and block types for a structure that fits in a 20x20x20 area.`;
 
       const response = await this.openai.chat.completions.create({
-        model: 'anthropic/claude-3-haiku',
+        model: this.getModel(),
         messages: [
           {
             role: 'system',
@@ -149,6 +170,28 @@ export class AIService {
       console.error('Structure generation error:', error);
       return this.getFallbackStructure();
     }
+  }
+
+  private hasValidApiKey(): boolean {
+    return !!(this.config.openRouterApiKey || this.config.openAiApiKey);
+  }
+
+  private getModel(): string {
+    if (this.config.openRouterApiKey) {
+      return 'anthropic/claude-3-haiku';
+    }
+    return 'gpt-3.5-turbo';
+  }
+
+  private getFallbackResponse(message: string): string {
+    const responses = [
+      "I'd love to help you with that! Try checking your crafting recipes or exploring nearby areas.",
+      "That's a great question! In VoxelCraft, you can usually find what you need by mining or crafting.",
+      "Here's a tip: try building with the materials you have available. Creativity is key!",
+      "For survival tips, remember to keep your health and hunger up, and always have a safe shelter.",
+      "Building tip: Start with simple structures and gradually make them more complex as you gather resources."
+    ];
+    return responses[Math.floor(Math.random() * responses.length)];
   }
 
   private getFallbackSuggestions(biome: string): BuildingSuggestion[] {
